@@ -14,24 +14,38 @@ import numpy as np
 import matplotlib.pyplot as plot
 import sys
 
-# os.environ['THEANO_FLAGS'] = "device=cpu1"
-os.environ['OMP_NUM_THREADS'] = "5"
+import socket
+
+# os.environ['THEANO_FLAGS'] = "device=gpu0,force_device=True"
+os.environ['OMP_NUM_THREADS'] = "30"
 import theano
 
-theano.config.floatX = 'float32'
+# theano.config.floatX = 'float32'
+# theano.config.blas.ldflags='-L/s/chopin/l/grad/varunb/Applications/blas/lib -lopenblas'
+# theano.config.gcc.cxx='/bin/g++34'
 
 from keras.layers.convolutional import Convolution2D
 from keras.layers.core import Dropout, Flatten, Dense
 from keras.layers.pooling import MaxPooling2D
 from keras.models import Sequential
 
-image_path = 'iamDB/data/forms1'
+# from keras.models import save
+
+CLASS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+         'N', \
+         'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
+         'k' \
+    , 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+
+image_path = 'data/forms1'
 
 thread_queue = Queue(10)
 
-ascii_fp = open('/home/varunbhat/workspace/ml_project/iamDB/data/ascii/words.txt')
+ascii_fp = open('data/ascii/words.txt')
 word_data = ascii_fp.read()
 ascii_fp.close()
+
+np.set_printoptions(threshold=np.nan, linewidth=1000)
 
 
 class HandwritingRecognition:
@@ -159,8 +173,9 @@ class HandwritingRecognition:
             for ((y_s, y_e), (x_s, x_e)) in line:
                 self.show_image(self.image[y_s:y_e, x_s:x_e])
 
-    def get_segmented_image_array(self, segments):
+    def get_segmented_image_array(self, segments=None):
         self.read_image(self.image_path) if self.image is None else 1
+        segments = self.segments if segments is None else segments
         arr = []
         for line in segments:
             for ((y_s, y_e), (x_s, x_e)) in line:
@@ -181,13 +196,20 @@ class HandwritingRecognition:
 
     @classmethod
     def get_letters(cls, image, label):
+        def normalize(image):
+            t_image = image
+            # threshold_val =
+            # cv2.threshold(t_image, threshold_val, threshold_val + ((255 - threshold_val) * .70), cv2.THRESH_OTSU, t_image)
+            cv2.normalize(t_image, t_image, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)
+            return t_image
+
         padding = (int(((image.shape[0] + int(np.ceil((image.shape[1] / len(label)) *
                                                       ((len(label) - 1) if len(label) > 1 else 1))))
                         - image.shape[1]) / 2) + int(image.shape[0]))
         padding = padding if padding >= 0 else 0
 
         x_loc = (np.linspace(0, image.shape[1], len(label)) + np.ones(len(label)) *
-                 (image.shape[1] / len(label) / 2)).astype(int)
+                 (image.shape[1] / len(label) / 2)).astype(image.dtype)
 
         # windows = [(_x - int(np.ceil(image.shape[0] / 2)) + padding, _x + int(np.ceil(image.shape[0] / 2)) + padding)
         #            for _x in x_loc]
@@ -197,18 +219,27 @@ class HandwritingRecognition:
 
         image = np.concatenate((np.ones((image.shape[0], padding), dtype=image.dtype) * 255, image), axis=1)
         image = np.concatenate((image, np.ones((image.shape[0], padding), dtype=image.dtype) * 255), axis=1)
+        # HandwritingRecognition.show(image)
+        image = normalize(image)
+        # HandwritingRecognition.show(image)
+
 
         image_letter_segments = {}
         for i, (x_l, x_h) in enumerate(windows):
             image_letter_segments[label[i]] = []
-            for offset in range(1):
-                off_s = offset * int(image.shape[0] / 10)
+            for offset in range(3):
+                off_s = offset * int(image.shape[0] / 5)
                 if image[:, x_l - off_s:x_h - off_s].shape[1] == image.shape[0] and \
                                 image[:, x_l + off_s:x_h + off_s].shape[1] == image.shape[0]:
+                    # print(image[:, x_l - off_s:x_h - off_s],'--Data before')
+                    # HandwritingRecognition.show(image[:, x_l - off_s:x_h - off_s])
+                    # image_letter_segments[label[i]].append(normalize(image[:, x_l - off_s:x_h - off_s]))
+                    # image_letter_segments[label[i]].append(normalize(image[:, x_l + off_s:x_h + off_s]))
                     image_letter_segments[label[i]].append(image[:, x_l - off_s:x_h - off_s])
                     image_letter_segments[label[i]].append(image[:, x_l + off_s:x_h + off_s])
-                    # else:
-                    #     HandwritingRecognition.show(image[:, x_l - off_s:x_h - off_s])
+                    # print(label[i])
+                    # print(image[:, x_l - off_s:x_h - off_s],'--Data after')
+                    # HandwritingRecognition.show(image[:, x_l - off_s:x_h - off_s]*255)
 
         return image_letter_segments
 
@@ -265,16 +296,17 @@ class ConvNet:
 
     def create_model(self, classes):
         self.model = Sequential()
-        self.model.add(Convolution2D(30, 5, 5, border_mode='valid', input_shape=(1, 28, 28), activation='relu'))
+        self.model.add(
+            Convolution2D(64, 5, 5, border_mode='valid', input_shape=(1, 64, 64), activation='relu', dim_ordering='th'))
         self.model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-        self.model.add(Convolution2D(15, 3, 3, activation='relu'))
+        self.model.add(Convolution2D(128, 3, 3, activation='relu', dim_ordering='th'))
         self.model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-        self.model.add(Convolution2D(10, 2, 2, activation='relu'))
+        self.model.add(Convolution2D(256, 3, 3, activation='relu', dim_ordering='th'))
         self.model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
         self.model.add(Dropout(0.5))
         self.model.add(Flatten())
-        self.model.add(Dense(128, activation='relu'))
-        self.model.add(Dense(50, activation='relu'))
+        # self.model.add(Dense(128, activation='relu'))
+        # self.model.add(Dense(50, activation='relu'))
         self.model.add(Dense(classes, activation='softmax'))
         self.model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
@@ -298,35 +330,36 @@ class ConvNet:
         x_test = []
         y_test = []
 
+        print('training keys:', self.training_class_letters.keys())
         for k in self.training_class_letters.keys():
             for _img_ref in self.training_class_letters[k]:
-                if ord(k) < 123:
+                if k in CLASS:
                     x_train.append(np.array(_img_ref))
-                    y_train.append(ord(k))
+                    y_train.append(CLASS.index(k))
 
-        x_train = np.array(x_train)
-        y_train = np.array(y_train)
-
-        x_train = x_train.reshape(x_train.shape[0], 1, 28, 28).astype('float32')
-        y_train = np_utils.to_categorical(y_train)
+        x_train = np.array(x_train, dtype='int')
+        y_train = np.array(y_train, dtype='int')
+        x_train = x_train.reshape(x_train.shape[0], 1, 64, 64).astype('float32')
+        y_train = np_utils.to_categorical(y_train, nb_classes=len(CLASS))
         print(x_train.shape, y_train.shape)
 
+        print('test keys:', self.test_class_letters.keys())
         for k in self.test_class_letters.keys():
             for _img_ref in self.test_class_letters[k]:
-                x_test.append(_img_ref)
-                y_test.append(ord(k))
+                if k in CLASS:
+                    x_test.append(_img_ref)
+                    y_test.append(CLASS.index(k))
 
-        x_test = np.array(x_test)
-        y_test = np.array(y_test)
+        x_test = np.array(x_test, dtype='int')
+        y_test = np.array(y_test, dtype='int')
 
-        x_test = x_test.reshape(x_test.shape[0], 1, 28, 28).astype('float32')
-        y_test = np_utils.to_categorical(y_test)
-
-        print(y_train.shape, y_test.shape)
-
+        x_test = x_test.reshape(x_test.shape[0], 1, 64, 64).astype('float32')
+        y_test = np_utils.to_categorical(y_test, nb_classes=len(CLASS))
+        print(x_test.shape, y_test.shape)
         self.create_model(y_train.shape[1])
 
         self.model.fit(x_train, y_train, validation_data=(x_test, y_test), nb_epoch=50, batch_size=200, verbose=2)
+        self.model.save('models/%s.h5' % socket.gethostname())
 
         y = self.model.predict_classes(x_train, batch_size=200, verbose=2)
 
@@ -335,7 +368,7 @@ class ConvNet:
         scores = self.model.evaluate(x_test, y_test, verbose=0)
         print("Baseline Error: %.2f%%" % (100 - scores[1] * 100))
 
-    def format_images(self, resize=28):
+    def format_images(self, resize=64):
         form_count = 0
         class_images = [self.training_class_letters, self.test_class_letters]
         labels_arr = [self.training_labels, self.test_labels]
@@ -361,8 +394,8 @@ class ConvNet:
                         else:
                             class_images[k][letter_cls] = letter_dict[letter_cls]
 
-        print("Training Letters:", len(self.training_class_letters.keys()))
-        print("Test Letters:", len(self.test_class_letters.keys()))
+        print("Training Letters:", self.training_class_letters.keys())
+        print("Test Letters:", self.test_class_letters.keys())
         print('Training Image Count:',
               sum([len(self.training_class_letters[i]) for i in sorted(self.training_class_letters.keys())]))
         print('Test Image Count:', sum([len(self.test_class_letters[i]) for i in self.test_class_letters]))
@@ -371,13 +404,13 @@ class ConvNet:
 def segment(pth):
     hreco = HandwritingRecognition(os.path.join(image_path, pth))
     hreco.segment()
-    hreco.show_segmented_words()
-    # count = 1
-    # for img in hreco.get_segmented_image_array():
-    #     if not os.path.exists(os.path.join('segmented', pth)):
-    #         os.mkdir(os.path.join('segmented', pth))
-    #     cv2.imwrite(os.path.join('segmented', pth, '%d.png' % count), img)
-    #     count += 1
+    # hreco.show_segmented_words()
+    count = 1
+    for img in hreco.get_segmented_image_array():
+        if not os.path.exists(os.path.join('segmented', pth)):
+            os.mkdir(os.path.join('segmented', pth))
+        cv2.imwrite(os.path.join('segmented', pth, '%d.png' % count), img)
+        count += 1
 
 
 def read_dataset(path):
@@ -393,16 +426,16 @@ def dispacher():
         t.start()
 
 
-# if __name__ == '__main__':
-#     # Thread(target=dispacher).start()
-#     dataset = []
-#     for pth in os.listdir(image_path):
-#         if 'png' not in pth:
-#             continue
-#         # print(pth)
-#         dataset.append(read_dataset(pth))
-#         # thread_queue.put(Thread(target=segment, args=(pth,)))
-#         segment(pth)
+if False and __name__ == '__main__':
+    # Thread(target=dispacher).start()
+    dataset = []
+    for pth in os.listdir(image_path):
+        if 'png' not in pth:
+            continue
+        print(pth)
+        # dataset.append(read_dataset(pth))
+        segment(pth)
+        # thread_queue.put(Thread(target=segment(pth)))
 
 if __name__ == '__main__':
     dataset = []
